@@ -17,10 +17,8 @@ class BaseUSBDeviceHandler:
                 loop.add_reader(fd, context.handleEventsTimeout)
             if events & 4:
                 loop.add_writer(fd, context.handleEventsTimeout)
-            print("add", fd, events)
 
         def removed_cb(fd):
-            print("rem", fd)
             loop.remove_reader(fd)
             loop.remove_writer(fd)
 
@@ -105,8 +103,7 @@ class USBDeviceTransport(BaseUSBDeviceHandler):
             elif tag == 0x80:
                 input_report_ids[report_id] = report_count
 
-        print(output_report_ids)
-        print(input_report_ids)
+        output_report_ids.sort(key=lambda a:a[0])
 
         hid_device = hid.Device(vid=device.getVendorID(),
                                 pid=device.getProductID(),
@@ -151,6 +148,10 @@ def get_descriptor_items(descriptor):
         yield (tag, data)
 
 
+LCB_CONTINUATION = 1
+LCB_MORE_TO_FOLLOW = 2
+
+
 class HIDReader:
     def __init__(self, hid_device, input_report_ids):
         self._loop = asyncio.get_event_loop()
@@ -159,12 +160,15 @@ class HIDReader:
         self._read_buffer_semaphore = threading.Semaphore(value=3)
         self._read_buffer_queue = asyncio.Queue()
         self._max_len = max(input_report_ids.values())
-        threading.Thread(target=self.read_loop).start()
+        self.eof = False
         self._read_buffer = None
+        threading.Thread(target=self._read_loop).start()
 
     async def readexactly(self, nbytes):
         if not self._read_buffer or len(self._read_buffer) == 0:
             self._read_buffer_semaphore.release()
+            if self.eof:
+                raise asyncio.exceptions.IncompleteReadError(partial=self._read_buffer, expected=nbytes)
             self._read_buffer = await self._read_buffer_queue.get()
 
         if len(self._read_buffer) >= nbytes:
@@ -175,53 +179,67 @@ class HIDReader:
             b = bytearray(self._read_buffer)
             while len(b) <= nbytes:
                 self._read_buffer_semaphore.release()
+                if self.eof:
+                    raise asyncio.exceptions.IncompleteReadError(partial=self._read_buffer, expected=nbytes)
                 b.extend(await self._read_buffer_queue.get())
             self._read_buffer = b[nbytes:]
             return b[:nbytes]
 
     def reset(self):
-        self.read_buffer = None
+        self._read_buffer = None
 
-    def read_loop(self):
+    def _read_loop(self):
         buf = bytearray()
-        while True:
-            self._read_buffer_semaphore.acquire()
-            while True:
-                report = self._hid_device.read(self._max_len + 2)
-                if len(report) <= 2:
-                    continue
-                lcb = report[1]
-                if lcb & 1:
-                    buf.clear()
-                    buf.extend(report[2:])
-                elif lcb & 2:
-                    buf.extend(report[2:])
-                else:
-                    if len(buf) > 0:
-                        buf.extend(report[2:])
-                        packet = bytes(buf)
+        try:
+            while not self.eof:
+                self._read_buffer_semaphore.acquire()
+                while not self.eof:
+                    report = self._hid_device.read(self._max_len + 2)
+                    if len(report) <= 2:
+                        continue
+                    lcb = report[1]
+                    payload = report[2:]
+                    if (lcb & LCB_CONTINUATION) == 0:
                         buf.clear()
+                    if (lcb & LCB_MORE_TO_FOLLOW) != 0:
+                        buf.extend(payload)
                     else:
-                        packet = report[2:]
-                    self._loop.call_soon_threadsafe(
-                        lambda: self._read_buffer_queue.put_nowait(packet))
-                    break
+                        if len(buf) > 0:
+                            buf.extend(payload)
+                            packet = bytes(buf)
+                            buf.clear()
+                        else:
+                            packet = payload
+                        self._loop.call_soon_threadsafe(
+                            lambda: self._read_buffer_queue.put_nowait(packet))
+                        break
+        except:
+            self.feed_eof()
+
+    def feed_eof(self):
+        self.eof = True
+        self._read_buffer_semaphore.acquire()
 
 
 class HIDWriter:
     def __init__(self, hid_device, output_report_ids):
+        self.closed = False
         self._hid_device = hid_device
         self._output_report_ids = output_report_ids
         self._write_buffer_queue = queue.Queue()
-        threading.Thread(target=self.write_loop).start()
+        threading.Thread(target=self._write_loop).start()
 
-    def write(self, bytes):
-        self._write_buffer_queue.put_nowait(bytes)
+    def write(self, buffer):
+        if self.closed:
+            raise IOError("closed")
+        self._write_buffer_queue.put_nowait(buffer)
 
-    def write_loop(self):
+    def _write_loop(self):
         while True:
             first = True
             buf = self._write_buffer_queue.get()
+            if buf is None or self.closed:
+                return
             while len(buf) > 0:
                 report_id = None
                 report_count = None
@@ -235,10 +253,14 @@ class HIDWriter:
                 if first:
                     first = False
                 else:
-                    lcb |= 1
+                    lcb |= LCB_CONTINUATION
                 if report_count < len(buf):
-                    lcb |= 2
+                    lcb |= LCB_MORE_TO_FOLLOW
                 padding = b'\0' * max(report_count - len(buf), 0)
                 self._hid_device.write(
                     bytes([report_id, lcb]) + buf[:report_count] + padding)
                 buf = buf[report_count:]
+
+    def close(self):
+        self.closed = True
+        self._write_buffer_queue.put_nowait(None)

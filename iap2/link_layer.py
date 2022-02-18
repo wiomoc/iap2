@@ -1,9 +1,11 @@
-from dataclasses import dataclass
-from typing import ClassVar
-from struct import Struct
-from functools import reduce
-from collections import namedtuple
+__all__ = ["IAP2Connection", "IAP2Stream"]
+
 import asyncio
+from collections import namedtuple
+from dataclasses import dataclass
+from functools import reduce
+from struct import Struct
+from typing import ClassVar, List, Callable, Any
 
 CONTROL_SYN = 0x80
 CONTROL_ACK = 0x40
@@ -102,15 +104,15 @@ IAP2_MARKER = b'\xFF\x55\x02\x00\xEE\x10'
 EA_SESSION_ID_STRUCT = Struct(">H")
 
 
-class IAPPacket:
-    def __init__(self, data, psn=None, session_id=0):
+class IAP2Packet:
+    def __init__(self, data: bytes, psn: int = None, session_id: int = 0):
         self.psn = psn
         self.data = data
         self.session_id = session_id
 
 
 class IAP2Stream:
-    def __init__(self, conn, session_id, stream_id=None):
+    def __init__(self, conn: "IAP2Connection", session_id: int, stream_id: int = None):
         self.conn = conn
         self.session_id = session_id
         self.stream_id = stream_id
@@ -123,20 +125,26 @@ class IAP2Stream:
         self.closed = False
 
     def write(self, data):
-        self.out_buffer += data
-        # while len(self.out_buffer) >= self.conn.lsp.max_len:
-        #    await self.conn.write_allowed_event.wait()
-        #    self.conn.send_packet(
-        #        IAPPacket(self.out_buffer[:self.conn.lsp.max_len],
-        #                  session_id=self.id))
-        #    del self.out_buffer[:self.conn.lsp.max_len]
+        if self.closed:
+            raise IOError("closed")
+        if len(self.out_buffer) == 0:
+            self.out_buffer = data
+        else:
+            self.out_buffer += data
+        while len(self.out_buffer) >= self.conn.lsp.max_len and self.conn.write_allowed_event.is_set():
+            self.conn.send_packet(
+                IAP2Packet(self.out_buffer[:self.conn.lsp.max_len],
+                           session_id=self.session_id))
+            del self.out_buffer[:self.conn.lsp.max_len]
 
     async def drain(self):
+        if self.closed:
+            raise IOError("closed")
         if len(self.out_buffer) == 0:
             return
         await self.conn.write_allowed_event.wait()
         self.conn.send_packet(
-            IAPPacket(self.out_buffer, session_id=self.session_id))
+            IAP2Packet(self.out_buffer, session_id=self.session_id))
         self.out_buffer = bytearray()
         if self.stream_id != None:
             self.out_buffer += EA_SESSION_ID_STRUCT.pack(self.stream_id)
@@ -155,7 +163,7 @@ class IAP2Stream:
             if self.closed:
                 raise asyncio.exceptions.IncompleteReadError(partial=self.in_buffer, expected=nbytes)
             self.in_waiter_count = nbytes
-            fut = self.conn.loop.create_future()
+            fut = self.conn._loop.create_future()
             self.in_waiter_fut = fut
             await fut
             if self.closed:
@@ -177,20 +185,21 @@ class IAP2Connection:
     EA_SESSION_ID = 11
 
     def __init__(self,
-                 output=None,
-                 input=None,
-                 loop=asyncio.get_event_loop(),
-                 max_outgoing=4,
-                 max_outgoing_delta=0,
-                 on_error=None):
+                 output: asyncio.StreamWriter,
+                 input: asyncio.StreamReader,
+                 loop: asyncio.AbstractEventLoop = asyncio.get_event_loop(),
+                 max_outgoing: int = 30,
+                 max_outgoing_delta: int = 0,
+                 ack_timeout=500,
+                 on_error: Callable[[Any], None] = None):
         self.on_error = on_error
         self.state = None
         self.lsp = LinkSynchronizationPayload(
             max_outgoing=max_outgoing,
-            max_len=4096,
-            retransmission_timeout=1035,
-            ack_timeout=23,
-            max_retransmissions=3,
+            max_len=65535,
+            retransmission_timeout=4000,
+            ack_timeout=ack_timeout,
+            max_retransmissions=4,
             max_ack=3,
             sessions=[
                 LSPSession(id=IAP2Connection.CONTROL_SESSION_ID,
@@ -198,22 +207,22 @@ class IAP2Connection:
                            version=1),
                 LSPSession(id=IAP2Connection.EA_SESSION_ID, type=2, version=1)
             ])
-        self.max_outgoing_delta = max_outgoing_delta
-        self.sent_psn = 50
-        self.last_sent_acknowledged_psn = None
-        self.unack_packets = []
-        self.queued_packets = []
+        self._max_outgoing_delta = max_outgoing_delta
+        self._sent_psn = 99
+        self._last_sent_acknowledged_psn = None
+        self._unack_packets = []
+        self._queued_packets = []
 
-        self.last_received_in_sequence_psn = 0
-        self.last_acked_psn = None
-        self.initial_received_psn = None
-        self.received_out_of_sequence = []
-        self.cumulative_received = 0
-        self.loop = loop
-        self.output = output
-        self.input = input
-        self.send_ack_timer = None
-        self.recv_ack_timer = None
+        self._last_received_in_sequence_psn = 0
+        self._last_acked_psn = None
+        self._initial_received_psn = None
+        self._received_out_of_sequence = []
+        self._cumulative_received = 0
+        self._loop = loop
+        self._output = output
+        self._input = input
+        self._send_ack_timer = None
+        self._recv_ack_timer = None
         self.write_allowed_event = asyncio.Event()
         self.control_session = IAP2Stream(self,
                                           IAP2Connection.CONTROL_SESSION_ID)
@@ -225,8 +234,18 @@ class IAP2Connection:
         self.ea_streams[stream_id] = stream
         return stream
 
-    def write_packet(self, payload=None, seq=0, control=0, session_id=0):
-        self.cumulative_received = 0
+    def start(self):
+        if self.state:
+            return
+        self._receive_loop_task = self._loop.create_task(self._receive_loop())
+        self.state = STATE_DETECT_IAP2_SUPPORT
+        self._send_detect_iap2_support()
+
+    def close(self):
+        self._input.feed_eof()
+
+    def _write_packet(self, payload=None, seq=0, control=0, session_id=0):
+        self._cumulative_received = 0
         if payload:
             length = len(payload) + 10
         else:
@@ -234,114 +253,105 @@ class IAP2Connection:
         header = LinkPacketHeader(control=control,
                                   length=length,
                                   seq=seq,
-                                  ack=self.last_received_in_sequence_psn,
+                                  ack=self._last_received_in_sequence_psn,
                                   session_id=session_id)
-        print(">", header)
+        print(">", header, payload)
         header_bytes = header.pack()
         if payload:
-            self.output.write(header_bytes + payload +
-                              bytes([gen_checksum(payload)]))
+            self._output.write(header_bytes + payload +
+                               bytes([gen_checksum(payload)]))
+
         else:
-            self.output.write(header_bytes)
+            self._output.write(header_bytes)
 
-    def send_ack(self):
-        self.write_packet(seq=self.sent_psn, control=CONTROL_ACK)
+    def _send_ack(self):
+        self._write_packet(seq=self._sent_psn, control=CONTROL_ACK)
 
-    def send_eak(self, num):
-        self.write_packet(bytes(num), seq=self.sent_psn, control=CONTROL_EAK)
+    def _send_eak(self, num):
+        self._write_packet(bytes(num), seq=self._sent_psn, control=CONTROL_EAK)
 
-    def send_data(self, p):
-        self.write_packet(p.data,
-                          seq=p.psn,
-                          control=CONTROL_ACK,
-                          session_id=p.session_id)
+    def _send_data(self, p):
+        self._write_packet(p.data,
+                           seq=p.psn,
+                           control=CONTROL_ACK,
+                           session_id=p.session_id)
 
-    def start(self):
-        if self.state:
-            return
-        self._receive_loop_task = self.loop.create_task(self.receive_loop())
-        self.state = STATE_DETECT_IAP2_SUPPORT
-        self.send_detect_iap2_support()
-
-    def send_detect_iap2_support(self):
+    def _send_detect_iap2_support(self):
         if self.state != STATE_DETECT_IAP2_SUPPORT:
             return
-        self.output.write(IAP2_MARKER)
-        self.loop.call_later(1, self.send_detect_iap2_support)
+        self._output.write(IAP2_MARKER)
+        self._loop.call_later(1, self._send_detect_iap2_support)
 
-    def send_negotiate(self):
+    def _send_negotiate(self):
         if self.state != STATE_NEGOTIATE:
             return
         lsp_bytes = self.lsp.pack()
-        self.write_packet(lsp_bytes, self.sent_psn, CONTROL_SYN)
-        self.loop.call_later(0.5, self.send_negotiate)
+        self._write_packet(lsp_bytes, self._sent_psn, CONTROL_SYN)
+        self._loop.call_later(0.5, self._send_negotiate)
 
-    async def receive_loop(self):
+    async def _receive_loop(self):
         try:
-            recv_marker = await self.input.readexactly(len(IAP2_MARKER))
+            recv_marker = await self._input.readexactly(len(IAP2_MARKER))
             if recv_marker != IAP2_MARKER:
-                self.bailout("IAP2 not supported")
+                self._bailout("IAP2 not supported")
                 return
-            if hasattr(self.input, "reset"):
-                self.input.reset()
+            if hasattr(self._input, "reset"):
+                self._input.reset()
             self.state = STATE_NEGOTIATE
-            self.send_negotiate()
+            self._send_negotiate()
             while True:
-                header_bytes = await self.input.readexactly(9)
+                header_bytes = await self._input.readexactly(9)
                 while True:
                     if int(header_bytes[0]) << 8 | int(
                             header_bytes[1]) == LinkPacketHeader.start:
                         break
-                    header_bytes = header_bytes[1:] + await self.input.readexactly(
+                    header_bytes = header_bytes[1:] + await self._input.readexactly(
                         1)
                 header = LinkPacketHeader.from_bytes(header_bytes)
-                print("<", header)
                 if not header:
                     continue
                 payload = None
                 if header.length > 9:
-                    payload_with_checksum = await self.input.readexactly(
+                    payload_with_checksum = await self._input.readexactly(
                         header.length - 9)
                     if not check_checksum(payload_with_checksum):
                         continue
                     payload = payload_with_checksum[:-1]
-                if hasattr(self.input, "reset"):
-                    self.input.reset()
+                print("<", header, payload)
+                if hasattr(self._input, "reset"):
+                    self._input.reset()
+                if (header.control & CONTROL_RST) != 0:
+                    self._bailout("device sent reset message")
                 if (header.control & CONTROL_SYN) != 0:
                     lsp = LinkSynchronizationPayload.from_bytes(payload)
                     if not lsp:
                         continue
-                    self.handle_syn(lsp, header.seq)
+                    self._handle_syn(lsp, header.seq)
                 if (header.control & CONTROL_ACK) != 0:
-                    self.cumulative_received += 1
-                    self.handle_ack(header.ack)
+                    self._cumulative_received += 1
+                    self._handle_ack(header.ack)
                 if (header.control & CONTROL_EAK) != 0 and payload:
-                    self.handle_eak([int(x) for x in payload])
+                    self._handle_eak([int(x) for x in payload])
                 if (header.control & ~CONTROL_ACK) == 0 and payload != None:
-                    self.handle_data(
-                        IAPPacket(payload, header.seq, header.session_id))
-                if self.cumulative_received >= self.lsp.max_ack:
-                    self.cumulative_received = 0
-                    self.last_acked_psn = self.last_received_in_sequence_psn
-                    self.send_ack()
+                    self._handle_data(
+                        IAP2Packet(payload, header.seq, header.session_id))
+                if self._cumulative_received >= self.lsp.max_ack:
+                    self._cumulative_received = 0
+                    self._last_acked_psn = self._last_received_in_sequence_psn
+                    self._send_ack()
         except asyncio.exceptions.IncompleteReadError:
-            try:
-                self.state = STATE_DEAD
-                self.output.close()
-                self.control_session.feed_eof()
-                for stream in self.ea_streams.values():
-                    stream.feed_eof()
-            except:
-                pass
+            self._bailout(None)
         except Exception as e:
-            self.bailout(e)
+            self._bailout(e)
 
-    def bailout(self, error):
+    def _bailout(self, error):
         if self.state == STATE_DEAD:
             return
+        self._disarm_send_ack_timer()
+        self._disarm_recv_ack_timer()
         self.state = STATE_DEAD
         try:
-            self.output.close()
+            self._output.close()
         except:
             pass
         try:
@@ -355,123 +365,129 @@ class IAP2Connection:
                 self._receive_loop_task.cancel()
             except:
                 pass
-        if self.on_error:
+        if error is not None and self.on_error:
             self.on_error(error)
 
-    def send_packet(self, p):
-        if distance(self.sent_psn, self.last_sent_acknowledged_psn
+    def send_packet(self, p: IAP2Packet):
+        if distance(self._sent_psn, self._last_sent_acknowledged_psn
                     ) > self.lsp.max_outgoing or self.state != STATE_NORMAL:
-            self.queued_packets.append(p)
+            self._queued_packets.append(p)
             self.write_allowed_event.clear()
             return
 
-        self.sent_psn = signed_add(self.sent_psn, 1)
+        self._sent_psn = signed_add(self._sent_psn, 1)
         p.counter = 0
-        p.psn = self.sent_psn
-        p.timeout = self.loop.time() + self.lsp.retransmission_timeout / 1000
-        self.disarm_send_ack_timer()
-        self.send_data(p)
-        self.last_acked_psn = self.last_received_in_sequence_psn
-        self.rearm_recv_ack_timer(p.timeout)
-        self.unack_packets.append(p)
+        p.psn = self._sent_psn
+        p.timeout = self._loop.time() + self.lsp.retransmission_timeout / 1000
+        self._disarm_send_ack_timer()
+        self._send_data(p)
+        self._last_acked_psn = self._last_received_in_sequence_psn
+        self._rearm_recv_ack_timer(p.timeout)
+        self._unack_packets.append(p)
 
-    def handle_syn(self, lsp, psn):
+    def _handle_syn(self, lsp: LinkSynchronizationPayload, psn: int):
         if self.state != STATE_NEGOTIATE:
             return
         print("Device:", lsp)
         print("Accessory:", self.lsp)
         self.lsp = lsp
-        self.last_received_in_sequence_psn = psn
-        self.last_acked_psn = psn
-        self.send_ack()
+        self._last_received_in_sequence_psn = psn
+        self._last_acked_psn = psn
+        self._send_ack()
 
-    def handle_ack(self, num):
+    def _handle_ack(self, num: int):
         if self.state == STATE_NEGOTIATE:
             self.state = STATE_NORMAL
             self.write_allowed_event.set()
-        self.last_sent_acknowledged_psn = num
-        while len(self.unack_packets) != 0:
-            if distance(
-                    self.unack_packets.pop(0).psn,
-                    self.last_sent_acknowledged_psn) == 0:
-                if len(self.unack_packets) != 0:
-                    self.rearm_recv_ack_timer(self.unack_packets[0].timeout)
-                    break
-        else:
-            self.disarm_recv_ack_timer()
+        self._last_sent_acknowledged_psn = num
 
-        while distance(self.sent_psn, self.last_sent_acknowledged_psn
+        while len(self._unack_packets) != 0:
+            d = distance(
+                self._unack_packets[0].psn,
+                self._last_sent_acknowledged_psn)
+            if 0 < d <= self.lsp.max_ack + 10:
+                self._rearm_recv_ack_timer(self._unack_packets[0].timeout)
+                break
+            else:
+                del self._unack_packets[0]
+        else:
+            self._disarm_recv_ack_timer()
+
+        while distance(self._sent_psn, self._last_sent_acknowledged_psn
                        ) < self.lsp.max_outgoing and len(
-            self.queued_packets) > 0:
-            self.send_packet(self.queued_packets.pop(0))
+            self._queued_packets) > 0:
+            self.send_packet(self._queued_packets.pop(0))
             self.write_allowed_event.set()
 
-    def on_expect_ack_timer(self):
-        unack_packets = sorted(self.unack_packets, key=lambda x: x.timeout)
+    def _on_expect_ack_timer(self):
+        if len(self._unack_packets) == 0 or self.state != STATE_NORMAL:
+            return
+        unack_packets = sorted(self._unack_packets, key=lambda x: x.timeout)
         p = unack_packets[0]
-        self.send_data(p)
-        self.disarm_send_ack_timer()
-        p.timeout = self.loop.time() + self.lsp.retransmission_timeout / 1000
+        p.timeout = self._loop.time() + self.lsp.retransmission_timeout / 1000
         p.counter += 1
         if p.counter == self.lsp.max_retransmissions:
-            self.bailout(p)
-        if len(unack_packets) > 1:
-            self.rearm_recv_ack_timer(unack_packets[1].timeout)
+            self._bailout(p)
+            return
+        self._send_data(p)
+        self._rearm_recv_ack_timer(unack_packets[0 if len(unack_packets) == 1 else 1].timeout)
 
-    def handle_eak(self, nums):
+    def _handle_eak(self, nums: List[int]):
         if self.state != STATE_NORMAL:
             return
-        for p in self.unack_packets:
+        for p in self._unack_packets:
             if p.psn in nums:
                 p.counter += 1
                 if p.counter == self.lsp.max_retransmissions:
-                    self.bailout(p)
+                    self._bailout(p)
                     continue
-                self.send_data(p)
-                self.disarm_send_ack_timer()
-                self.rearm_recv_ack_timer(p.timeout)
+                self._send_data(p)
+                self._disarm_send_ack_timer()
+                self._rearm_recv_ack_timer(p.timeout)
 
-    def on_send_ack_timer(self):
-        self.last_acked_psn = self.last_received_in_sequence_psn
-        self.send_ack()
+    def _on_send_ack_timer(self):
+        if self.state != STATE_NORMAL:
+            return
+        self._last_acked_psn = self._last_received_in_sequence_psn
+        self._send_ack()
 
-    def handle_data(self, p):
-        d = distance(p.psn, self.last_received_in_sequence_psn)
+    def _handle_data(self, p: IAP2Packet):
+        d = distance(p.psn, self._last_received_in_sequence_psn)
         if d > self.lsp.max_outgoing + 10 or d == 0:
-            self.send_ack()
+            self._send_ack()
             return
 
         if d > 1:
-            self.received_out_of_sequence.append(p)
+            self._received_out_of_sequence.append(p)
             if d >= self.lsp.max_outgoing:
                 eak = []
-                x = self.last_received_in_sequence_psn
+                x = self._last_received_in_sequence_psn
                 while distance(p.psn, x) > 1:
                     x = signed_add(x, 1)
                     eak.append(x)
-                self.disarm_send_ack_timer()
-                self.send_eak(eak)
+                self._disarm_send_ack_timer()
+                self._send_eak(eak)
             return
 
-        self.received_out_of_sequence.append(p)
-        for pp in sorted(self.received_out_of_sequence,
+        self._received_out_of_sequence.append(p)
+        for pp in sorted(self._received_out_of_sequence,
                          key=lambda x: distance(
-                             x.psn, self.last_received_in_sequence_psn)):
-            if distance(pp.psn, self.last_received_in_sequence_psn) > 1:
+                             x.psn, self._last_received_in_sequence_psn)):
+            if distance(pp.psn, self._last_received_in_sequence_psn) > 1:
                 break
-            self.received_data(pp)
-            self.last_received_in_sequence_psn = pp.psn
-            self.received_out_of_sequence.remove(pp)
+            self._received_data(pp)
+            self._last_received_in_sequence_psn = pp.psn
+            self._received_out_of_sequence.remove(pp)
 
-        if distance(self.last_received_in_sequence_psn, self.last_acked_psn
-                    ) >= self.lsp.max_outgoing - self.max_outgoing_delta:
-            self.disarm_send_ack_timer()
-            self.last_acked_psn = self.last_received_in_sequence_psn
-            self.send_ack()
+        if distance(self._last_received_in_sequence_psn, self._last_acked_psn
+                    ) >= self.lsp.max_outgoing - self._max_outgoing_delta:
+            self._disarm_send_ack_timer()
+            self._last_acked_psn = self._last_received_in_sequence_psn
+            self._send_ack()
         else:
-            self.rearm_send_ack_timer()
+            self._rearm_send_ack_timer()
 
-    def received_data(self, p):
+    def _received_data(self, p: IAP2Packet):
         if p.session_id == IAP2Connection.CONTROL_SESSION_ID:
             self.control_session.received_data(p.data)
         elif p.session_id == IAP2Connection.EA_SESSION_ID and len(p.data) >= 2:
@@ -480,32 +496,29 @@ class IAP2Connection:
             if stream:
                 stream.received_data(p.data[2:])
 
-    def disarm_send_ack_timer(self):
-        if self.send_ack_timer:
-            self.send_ack_timer.cancel()
-            self.send_ack_timer = None
+    def _disarm_send_ack_timer(self):
+        if self._send_ack_timer:
+            self._send_ack_timer.cancel()
+            self._send_ack_timer = None
 
-    def rearm_send_ack_timer(self):
-        if self.send_ack_timer:
-            self.send_ack_timer.cancel()
-        self.send_ack_timer = self.loop.call_later(self.lsp.ack_timeout / 1000,
-                                                   self.on_send_ack_timer)
+    def _rearm_send_ack_timer(self):
+        if self._send_ack_timer:
+            self._send_ack_timer.cancel()
+        self._send_ack_timer = self._loop.call_later(self.lsp.ack_timeout / 1000,
+                                                     self._on_send_ack_timer)
 
-    def disarm_recv_ack_timer(self):
-        if self.recv_ack_timer:
-            self.recv_ack_timer.cancel()
-            self.recv_ack_timer = None
+    def _disarm_recv_ack_timer(self):
+        if self._recv_ack_timer:
+            self._recv_ack_timer.cancel()
+            self._recv_ack_timer = None
 
-    def rearm_recv_ack_timer(self, time):
-        if self.recv_ack_timer:
-            self.recv_ack_timer.cancel()
-        self.recv_ack_timer = self.loop.call_at(time, self.on_expect_ack_timer)
-
-    def close(self):
-        self.input.feed_eof()
+    def _rearm_recv_ack_timer(self, time):
+        if self._recv_ack_timer:
+            self._recv_ack_timer.cancel()
+        self._recv_ack_timer = self._loop.call_at(time, self._on_expect_ack_timer)
 
 
-def distance(a, b):
+def distance(a: int, b: int):
     if b is None:
         return 0
     elif a >= b:

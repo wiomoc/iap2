@@ -5,7 +5,7 @@ import random
 
 from iap2.link_layer import CONTROL_SYN, CONTROL_ACK, LinkSynchronizationPayload, LinkPacketHeader, IAP2_MARKER, \
     STATE_NORMAL, gen_checksum, IAP2Connection, LSPSession
-from utils import gen_pipe
+from iap2.tests.utils import gen_pipe
 
 
 class TestLinkPacketHeader(unittest.TestCase):
@@ -60,291 +60,291 @@ class TestIAP2Connection(unittest.TestCase):
             self.id = random.random()
 
     def test_normal(self):
-        conn = IAP2Connection(max_outgoing=3)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=3)
         conn.state = STATE_NORMAL
-        conn.sent_psn = 199
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
-        conn.send_data = Mock()
-        conn.disarm_send_ack_timer = Mock()
-        conn.rearm_recv_ack_timer = Mock()
-        conn.last_acked_psn = 99
-        conn.last_received_in_sequence_psn = 99
+        conn._sent_psn = 199
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
+        conn._send_data = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._rearm_recv_ack_timer = Mock()
+        conn._last_acked_psn = 99
+        conn._last_received_in_sequence_psn = 99
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 100
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
 
         conn.send_packet(p2)
 
-        conn.send_data.assert_called_with(p2)
-        self.assertEqual(conn.last_received_in_sequence_psn, p1.psn)
-        conn.disarm_send_ack_timer.assert_called()
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.assert_called_with(p2)
+        self.assertEqual(conn._last_received_in_sequence_psn, p1.psn)
+        conn._disarm_send_ack_timer.assert_called()
+        conn._rearm_recv_ack_timer.assert_called()
         self.assertEqual(p2.psn, 200)
-        self.assertEqual(conn.unack_packets, [p2])
+        self.assertEqual(conn._unack_packets, [p2])
 
         p3 = TestIAP2Connection.TestPacket()
         p3.psn = 101
 
-        conn.handle_data(p3)
+        conn._handle_data(p3)
 
-        conn.received_data.assert_called_with(p3)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p3)
+        conn._rearm_send_ack_timer.assert_called()
 
-        conn.disarm_recv_ack_timer = Mock()
+        conn._disarm_recv_ack_timer = Mock()
 
-        conn.handle_ack(200)
+        conn._handle_ack(200)
 
-        conn.disarm_recv_ack_timer.assert_called()
-        self.assertEqual(conn.unack_packets, [])
+        conn._disarm_recv_ack_timer.assert_called()
+        self.assertEqual(conn._unack_packets, [])
 
         p4 = TestIAP2Connection.TestPacket()
         p4.psn = 102
 
-        conn.handle_data(p4)
+        conn._handle_data(p4)
 
-        conn.handle_ack(200)
-        conn.disarm_recv_ack_timer.assert_called()
+        conn._handle_ack(200)
+        conn._disarm_recv_ack_timer.assert_called()
 
         p5 = TestIAP2Connection.TestPacket()
 
         conn.send_packet(p5)
 
-        conn.send_data.assert_called_with(p5)
-        self.assertEqual(conn.last_received_in_sequence_psn, p4.psn)
-        conn.disarm_send_ack_timer.assert_called()
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.assert_called_with(p5)
+        self.assertEqual(conn._last_received_in_sequence_psn, p4.psn)
+        conn._disarm_send_ack_timer.assert_called()
+        conn._rearm_recv_ack_timer.assert_called()
         self.assertEqual(p5.psn, 201)
 
     def test_ack_timeout(self):
-        conn = IAP2Connection(max_outgoing=3)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=3, ack_timeout=20)
         conn.state = STATE_NORMAL
-        conn.sent_psn = 199
-        conn.rearm_recv_ack_timer = Mock()
-        conn.send_data = Mock()
-        conn.disarm_send_ack_timer = Mock()
-        conn.last_received_in_sequence_psn = 99
-        conn.disarm_recv_ack_timer = Mock()
+        conn._sent_psn = 199
+        conn._rearm_recv_ack_timer = Mock()
+        conn._send_data = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._last_received_in_sequence_psn = 99
+        conn._disarm_recv_ack_timer = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
 
         conn.send_packet(p1)
 
-        conn.send_data.assert_called_with(p1)
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.assert_called_with(p1)
+        conn._rearm_recv_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
 
         conn.send_packet(p2)
 
-        conn.send_data.assert_called_with(p2)
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.assert_called_with(p2)
+        conn._rearm_recv_ack_timer.assert_called()
 
-        conn.on_expect_ack_timer()
-        conn.send_data.assert_called_with(p1)
+        conn._on_expect_ack_timer()
+        conn._send_data.assert_called_with(p1)
 
-        conn.rearm_recv_ack_timer.assert_called()
-        conn.on_expect_ack_timer()
-        conn.send_data.assert_called_with(p2)
+        conn._rearm_recv_ack_timer.assert_called()
+        conn._on_expect_ack_timer()
+        conn._send_data.assert_called_with(p2)
 
-        conn.handle_ack(p1.psn)
-        self.assertEqual(conn.unack_packets, [p2])
+        conn._handle_ack(p1.psn)
+        self.assertEqual(conn._unack_packets, [p2])
 
-        conn.on_expect_ack_timer()
-        conn.send_data.assert_called_with(p2)
+        conn._on_expect_ack_timer()
+        conn._send_data.assert_called_with(p2)
 
-        conn.handle_ack(p2.psn)
+        conn._handle_ack(p2.psn)
 
-        conn.disarm_recv_ack_timer.asser_called()
+        conn._disarm_recv_ack_timer.asser_called()
 
     def test_buffer(self):
-        conn = IAP2Connection(max_outgoing=2)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=2)
         conn.state = STATE_NORMAL
-        conn.sent_psn = 199
-        conn.last_sent_acknowledged_psn = 198
-        conn.rearm_recv_ack_timer = Mock()
-        conn.disarm_send_ack_timer = Mock()
-        conn.disarm_recv_ack_timer = Mock()
-        conn.send_data = Mock()
+        conn._sent_psn = 199
+        conn._last_sent_acknowledged_psn = 198
+        conn._rearm_recv_ack_timer = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._disarm_recv_ack_timer = Mock()
+        conn._send_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         conn.send_packet(p1)
-        conn.send_data.reset_mock()
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.reset_mock()
+        conn._rearm_recv_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         conn.send_packet(p2)
-        conn.send_data.assert_called_with(p2)
-        conn.send_data.reset_mock()
-        conn.rearm_recv_ack_timer.assert_called()
+        conn._send_data.assert_called_with(p2)
+        conn._send_data.reset_mock()
+        conn._rearm_recv_ack_timer.assert_called()
 
         p3 = TestIAP2Connection.TestPacket()
         conn.send_packet(p3)
-        conn.send_data.assert_not_called()
+        conn._send_data.assert_not_called()
 
-        conn.handle_ack(p2.psn)
-        conn.send_data.assert_called_with(p3)
+        conn._handle_ack(p2.psn)
+        conn._send_data.assert_called_with(p3)
 
     def test_cumulative(self):
-        conn = IAP2Connection(max_outgoing=2)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=2)
         conn.state = STATE_NORMAL
-        conn.last_acked_psn = 99
-        conn.last_received_in_sequence_psn = 99
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
+        conn._last_acked_psn = 99
+        conn._last_received_in_sequence_psn = 99
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 100
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         p2.psn = 101
-        conn.disarm_send_ack_timer = Mock()
-        conn.send_ack = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._send_ack = Mock()
 
-        conn.handle_data(p2)
+        conn._handle_data(p2)
 
-        conn.received_data.assert_called_with(p2)
-        conn.send_ack.assert_called()
-        self.assertEqual(conn.last_received_in_sequence_psn, p2.psn)
-        conn.disarm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p2)
+        conn._send_ack.assert_called()
+        self.assertEqual(conn._last_received_in_sequence_psn, p2.psn)
+        conn._disarm_send_ack_timer.assert_called()
 
     def test_out_of_order(self):
-        conn = IAP2Connection(max_outgoing=10)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=10)
         conn.state = STATE_NORMAL
-        conn.last_acked_psn = 102
-        conn.last_received_in_sequence_psn = 102
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
+        conn._last_acked_psn = 102
+        conn._last_received_in_sequence_psn = 102
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 103
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         p2.psn = 107
 
-        conn.handle_data(p2)
+        conn._handle_data(p2)
 
         p3 = TestIAP2Connection.TestPacket()
         p3.psn = 105
 
-        conn.handle_data(p3)
+        conn._handle_data(p3)
 
         p4 = TestIAP2Connection.TestPacket()
         p4.psn = 104
-        conn.disarm_send_ack_timer = Mock()
-        conn.send_ack = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._send_ack = Mock()
 
-        conn.handle_data(p4)
+        conn._handle_data(p4)
 
-        conn.received_data.assert_has_calls([call(p4), call(p3)])
-        self.assertEqual(conn.last_received_in_sequence_psn, p3.psn)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_has_calls([call(p4), call(p3)])
+        self.assertEqual(conn._last_received_in_sequence_psn, p3.psn)
+        conn._rearm_send_ack_timer.assert_called()
 
     def test_out_of_order_overflow(self):
-        conn = IAP2Connection(max_outgoing=3)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=3)
         conn.state = STATE_NORMAL
-        conn.last_acked_psn = 253
-        conn.last_received_in_sequence_psn = 253
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
+        conn._last_acked_psn = 253
+        conn._last_received_in_sequence_psn = 253
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 254
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         p2.psn = 0
 
-        conn.handle_data(p2)
+        conn._handle_data(p2)
 
         p3 = TestIAP2Connection.TestPacket()
         p3.psn = 255
-        conn.disarm_send_ack_timer = Mock()
-        conn.send_ack = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._send_ack = Mock()
 
-        conn.handle_data(p3)
+        conn._handle_data(p3)
 
-        conn.received_data.assert_has_calls([call(p3), call(p2)])
-        conn.send_ack.assert_called()
-        self.assertEqual(conn.last_received_in_sequence_psn, p2.psn)
-        conn.disarm_send_ack_timer.assert_called()
+        conn._received_data.assert_has_calls([call(p3), call(p2)])
+        conn._send_ack.assert_called()
+        self.assertEqual(conn._last_received_in_sequence_psn, p2.psn)
+        conn._disarm_send_ack_timer.assert_called()
 
     def test_eak(self):
-        conn = IAP2Connection(max_outgoing=2)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=2)
         conn.state = STATE_NORMAL
-        conn.last_received_in_sequence_psn = 102
-        conn.last_acked_psn = 102
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
+        conn._last_received_in_sequence_psn = 102
+        conn._last_acked_psn = 102
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 103
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         p2.psn = 105
-        conn.disarm_send_ack_timer = Mock()
-        conn.send_ack = Mock()
-        conn.send_eak = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._send_ack = Mock()
+        conn._send_eak = Mock()
 
-        conn.handle_data(p2)
+        conn._handle_data(p2)
 
-        conn.disarm_send_ack_timer.assert_called()
-        conn.send_eak.assert_called_with([104])
-        self.assertEqual(conn.last_received_in_sequence_psn, p1.psn)
+        conn._disarm_send_ack_timer.assert_called()
+        conn._send_eak.assert_called_with([104])
+        self.assertEqual(conn._last_received_in_sequence_psn, p1.psn)
 
     def test_eak_overflow(self):
-        conn = IAP2Connection(max_outgoing=2)
+        conn = IAP2Connection(input=None, output=None, max_outgoing=2)
         conn.state = STATE_NORMAL
-        conn.last_received_in_sequence_psn = 254
-        conn.last_acked_psn = 254
-        conn.rearm_send_ack_timer = Mock()
-        conn.received_data = Mock()
+        conn._last_received_in_sequence_psn = 254
+        conn._last_acked_psn = 254
+        conn._rearm_send_ack_timer = Mock()
+        conn._received_data = Mock()
 
         p1 = TestIAP2Connection.TestPacket()
         p1.psn = 255
 
-        conn.handle_data(p1)
+        conn._handle_data(p1)
 
-        conn.received_data.assert_called_with(p1)
-        conn.rearm_send_ack_timer.assert_called()
+        conn._received_data.assert_called_with(p1)
+        conn._rearm_send_ack_timer.assert_called()
 
         p2 = TestIAP2Connection.TestPacket()
         p2.psn = 1
-        conn.disarm_send_ack_timer = Mock()
-        conn.send_ack = Mock()
-        conn.send_eak = Mock()
+        conn._disarm_send_ack_timer = Mock()
+        conn._send_ack = Mock()
+        conn._send_eak = Mock()
 
-        conn.handle_data(p2)
+        conn._handle_data(p2)
 
-        conn.disarm_send_ack_timer.assert_called()
-        conn.send_eak.assert_called_with([0])
-        self.assertEqual(conn.last_received_in_sequence_psn, p1.psn)
+        conn._disarm_send_ack_timer.assert_called()
+        conn._send_eak.assert_called_with([0])
+        self.assertEqual(conn._last_received_in_sequence_psn, p1.psn)
 
 
 def async_test(f):

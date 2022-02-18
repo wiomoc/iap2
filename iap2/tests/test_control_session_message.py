@@ -44,7 +44,7 @@ class TestControlSessionMessage(unittest.TestCase):
                     match_action=MatchAction.NONE,
                 )],
                 current_language="de",
-                supported_language=["de", "en"],
+                supported_language=["de"], #, "en"],
                 app_match_team_id="",
                 bluetooth_transport_component=[BluetoothTransportComponent(
                     id=Uint16(0),

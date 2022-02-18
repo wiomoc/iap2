@@ -1,8 +1,7 @@
-__all__ = ["identification", "authentication", "eap", "vehicle_status"]
-
 from enum import IntEnum
 from struct import Struct
-from typing import get_type_hints, NewType, get_args, get_origin, Annotated, Dict, Type, List, Optional
+from typing import get_type_hints, NewType, get_args, get_origin, Annotated, Dict, Type, Optional, Union
+from warnings import warn
 
 CSM_STRUCT = Struct(">HHH")
 CSM_PARAM_STRUCT = Struct(">HH")
@@ -23,7 +22,7 @@ async def read_csm(reader):
     payload = await reader.readexactly(length - 6)
     message_type = _MESSAGE_TYPES.get(msg_id)
     if message_type:
-        message_instance = message_type()
+        message_instance = message_type.__new__(message_type)
         message_instance.csm_deserialize_params(payload)
         return message_instance
     else:
@@ -49,44 +48,46 @@ NoneLike = NewType("None", Optional[bool])
 def csm(msg_id: int):
     def decorator(clazz):
         def build_deserialize_params(handlers):
-            def deserialize_params(self, payload, handlers=handlers):
+            def deserialize_params(self, payload):
+                handlers_clone = handlers.copy()
                 while len(payload) > 0:
                     length, param_id = CSM_PARAM_STRUCT.unpack(
                         payload[:4])
                     param_payload = payload[4:length]
                     payload = payload[length:]
-                    print(param_id)
-                    tmp = handlers.get(param_id)
-                    if tmp:
-                        _serializer, deserializer, name, is_list = tmp
+                    if param_id in handlers_clone:
+                        _serializer, deserializer, name, is_list, _is_optional = handlers_clone.pop(param_id)
                         value = deserializer(param_payload)
                         if is_list:
-                            value_list = getattr(self, name)
-                            if not value_list:
-                                value_list = []
-                                setattr(self, name, value_list)
+                            value_list = []
                             value_list.append(value)
+                            setattr(self, name, value_list)
                         else:
                             setattr(self, name, value)
+                for _serializer, _deserializer, name, is_list, is_optional in handlers_clone.values():
+                    if not is_optional and not is_list:
+                        raise ValueError(f"{name} is not optional")
+                    setattr(self, name, [] if is_list else None)
 
             return deserialize_params
 
         def build_serialize_params(handlers):
-            def serialize_params(self, handlers=handlers):
+            def serialize_params(self):
                 params_bytes = bytearray()
-                for param_id, (serializer, _deserializer, name, is_list) in handlers.items():
+                for param_id, (serializer, _deserializer, name, is_list, is_optional) in handlers.items():
                     value = getattr(self, name)
 
                     if value is not None:
                         if is_list:
-                            for val in value:
-                                payload = serializer(val)
-                                params_bytes.extend(CSM_PARAM_STRUCT.pack(
-                                    len(payload) + 4, param_id) + payload)
+                            if len(value) == 0:
+                                continue
+                            payload = b''.join((serializer(val) for val in value))
                         else:
                             payload = serializer(value)
-                            params_bytes.extend(CSM_PARAM_STRUCT.pack(
-                                len(payload) + 4, param_id) + payload)
+                        params_bytes.extend(CSM_PARAM_STRUCT.pack(
+                            len(payload) + 4, param_id) + payload)
+                    elif not is_optional and not is_list:
+                        warn(f"{name} is not optional")
                 return params_bytes
 
             return serialize_params
@@ -103,10 +104,16 @@ def csm(msg_id: int):
 
             for param_id, (name, hint) in enumerate(hints):
                 is_list = False
+                is_optional = False
                 if get_origin(hint) == Annotated:
                     args = get_args(hint)
                     param_id = args[1]
                     hint = args[0]
+                if get_origin(hint) == Union:
+                    args = get_args(hint)
+                    if args[1] == type(None):
+                        is_optional = True
+                        hint = args[0]
                 if get_origin(hint) == list:
                     is_list = True
                     args = get_args(hint)
@@ -134,9 +141,10 @@ def csm(msg_id: int):
                 serializer = None
                 deserializer = None
                 if s is not None:
-                    serializer = lambda val, struc=s: struc.pack(val)
-                    deserializer = lambda buffer, struc=s: struc.unpack(buffer)[0] if len(buffer) > 0 else None
+                    serializer = lambda val, s=s: s.pack(val)
+                    deserializer = lambda buffer, s=s: s.unpack(buffer)[0] if len(buffer) > 0 else None
                 elif hint == NoneLike or hint == type(None):
+                    is_optional = True
                     serializer = lambda val: b""
                     deserializer = lambda buffer: True
                 elif issubclass(hint, IntEnum):
@@ -152,8 +160,8 @@ def csm(msg_id: int):
                     group_handlers = build_handlers(hint)
                     serializer = build_serialize_params(group_handlers)
 
-                    def de(buffer, de_params=build_deserialize_params(group_handlers), hint=hint):
-                        instance = hint()
+                    def de(buffer, de_params=build_deserialize_params(group_handlers), param_class=hint):
+                        instance = param_class.__new__(param_class)
                         de_params(instance, buffer)
                         return instance
 
@@ -162,7 +170,7 @@ def csm(msg_id: int):
                 if not serializer:
                     raise TypeError("Invalid type for csm")
 
-                handlers[param_id] = (serializer, deserializer, name, is_list)
+                handlers[param_id] = (serializer, deserializer, name, is_list, is_optional)
             return handlers
 
         message_handlers = build_handlers(clazz)

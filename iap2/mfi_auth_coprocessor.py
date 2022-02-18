@@ -25,7 +25,6 @@ def _write_i2c(addr, arr):
 
 
 def read_certificate():
-    print(bus.read_word_data(DEV_ADDR, 0x30))
     size = Word.unpack(_read_i2c(0x30, 2))[0]  # Read Accessory Certificate Data Length
     return _read_i2c(0x31, size)  # Read Accessory Certificate Data
 

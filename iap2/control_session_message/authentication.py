@@ -16,7 +16,7 @@ class AuthenticationCertificate:
 
 @csm(0xAA02)
 class RequestAuthenticationChallengeResponse:
-    challenge: bytes = None
+    challenge: bytes
 
 
 @csm(0xAA03)

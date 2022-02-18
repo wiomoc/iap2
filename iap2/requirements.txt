@@ -3,3 +3,4 @@ functionfs==0.8.0
 dbus-python==1.2.18
 hid==1.0.4
 smbus2==0.4.1
+zeroconf==0.38.1

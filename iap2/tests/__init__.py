@@ -1,2 +1,2 @@
-import test_control_session_message
-import test_link_layer
+import iap2.tests.test_control_session_message
+import iap2.tests.test_link_layer

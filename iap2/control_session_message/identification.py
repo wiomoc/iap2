@@ -1,6 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import List, Annotated
+from typing import List, Annotated, Optional
 
 from iap2.control_session_message import csm, Uint16, Uint8, NoneLike
 
@@ -19,16 +19,16 @@ class MatchAction(IntEnum):
 
 @dataclass
 class ExternalAccessoryProtocol:
-    id: Uint8 = None
-    name: str = None
-    match_action: MatchAction = None
-    native_transport_component_identifier: Uint16 = None
+    id: Uint8
+    name: str
+    match_action: MatchAction
+    native_transport_component_identifier: Optional[Uint16] = None
 
 
 @dataclass
 class TransportComponent:
-    id: Uint16 = None
-    name: str = None
+    id: Uint16
+    name: str
     supports_iap2_connection: NoneLike = None
 
 
@@ -44,17 +44,17 @@ class BluetoothTransportComponent(TransportComponent):
 
 @dataclass
 class USBDeviceTransportComponent(TransportComponent):
-    audio_sample_rate: Annotated[Uint8, 3] = None  # Fixme
+    audio_sample_rate: Annotated[Optional[Uint8], 3] = None  # Fixme
 
 
 @dataclass
 class WirelessCarPlayTransportComponent(TransportComponent):
-    supports_car_play: NoneLike = None
+    supports_car_play: Annotated[NoneLike, 4] = None
 
 
 @dataclass
 class USBHostTransportComponent(TransportComponent):
-    car_play_interface_number: Annotated[Uint8, 3] = None
+    car_play_interface_number: Annotated[Optional[Uint8], 3] = None
 
 
 class EngineType(IntEnum):
@@ -73,8 +73,8 @@ class VehicleInformationComponent:
 
 @dataclass
 class VehicleStatusComponent:
-    id: Uint16 = None
-    name: str = None
+    id: Uint16
+    name: str
     range: Annotated[NoneLike, 3] = None
     outside_temperature: Annotated[NoneLike, 4] = None
     range_warning: Annotated[NoneLike, 5] = None
@@ -88,27 +88,27 @@ class StartIdentification:
 @csm(0x1D01)
 @dataclass
 class IdentificationInformation:
-    name: str = None
-    model_identifier: str = None
-    manufacturer: str = None
-    serial_number: str = None
-    fireware_version: str = None
-    hardware_version: str = None
-    messages_sent_by_accessory: bytes = None
-    messages_received_from_accessory: bytes = None
-    power_providing_capability: PowerProvidingCapability = None
-    maximum_current_drawn_from_device: Uint16 = None
-    supported_external_accessory_protocol: List[ExternalAccessoryProtocol] = None
-    app_match_team_id: str = None
-    current_language: str = None
-    supported_language: List[str] = None
-    serial_transport_component: List[SerialTransportComponent] = None
-    usb_device_transport_component: List[USBDeviceTransportComponent] = None
-    usb_host_transport_component: List[USBHostTransportComponent] = None
-    bluetooth_transport_component: List[BluetoothTransportComponent] = None
-    vehicle_information_component: Annotated[VehicleInformationComponent, 20] = None
-    vehicle_status_component: Annotated[VehicleStatusComponent, 21] = None
-    wireless_car_play_transport_component: Annotated[WirelessCarPlayTransportComponent, 24] = None
+    name: str
+    model_identifier: str
+    manufacturer: str
+    serial_number: str
+    fireware_version: str
+    hardware_version: str
+    messages_sent_by_accessory: bytes
+    messages_received_from_accessory: bytes
+    power_providing_capability: PowerProvidingCapability
+    maximum_current_drawn_from_device: Uint16
+    supported_external_accessory_protocol: List[ExternalAccessoryProtocol]
+    app_match_team_id: Optional[str]
+    current_language: str
+    supported_language: List[str]
+    serial_transport_component: List[SerialTransportComponent] = field(default_factory=list)
+    usb_device_transport_component: List[USBDeviceTransportComponent] = field(default_factory=list)
+    usb_host_transport_component: List[USBHostTransportComponent] = field(default_factory=list)
+    bluetooth_transport_component: List[BluetoothTransportComponent] = field(default_factory=list)
+    vehicle_information_component: Annotated[Optional[VehicleInformationComponent], 20] = None
+    vehicle_status_component: Annotated[Optional[VehicleStatusComponent], 21] = None
+    wireless_car_play_transport_component: Annotated[Optional[WirelessCarPlayTransportComponent], 24] = None
 
 
 @csm(0x1D02)
@@ -117,5 +117,26 @@ class IdentificationAccepted:
 
 
 @csm(0x1D03)
+@dataclass
 class IdentificationRejected:
-    pass
+    name: NoneLike
+    model_identifier: NoneLike
+    manufacturer: NoneLike
+    serial_number: NoneLike
+    fireware_version: NoneLike
+    hardware_version: NoneLike
+    messages_sent_by_accessory: NoneLike
+    messages_received_from_accessory: NoneLike
+    power_providing_capability: NoneLike
+    maximum_current_drawn_from_device: NoneLike
+    supported_external_accessory_protocol: NoneLike
+    app_match_team_id: NoneLike
+    current_language: NoneLike
+    supported_language: NoneLike
+    serial_transport_component: NoneLike
+    usb_device_transport_component: NoneLike
+    usb_host_transport_component: NoneLike
+    bluetooth_transport_component: NoneLike
+    vehicle_information_component: Annotated[NoneLike, 20]
+    vehicle_status_component: Annotated[NoneLike, 21]
+    wireless_car_play_transport_component: Annotated[NoneLike, 24]

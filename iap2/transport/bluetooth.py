@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 # sudo hciconfig hci0 inqdata 0e0972617370626572727970693031020a00091002006b1d460237051107FFCACADEAFDECADEDEFACADE00000000
+# 0d0950455547454f2d3633383400110600000000DECAFADEDECADEAFDECACAFF1107D31FBF505D572797A24041CD484388EC
 import asyncio
 import socket
 import threading
@@ -9,6 +10,8 @@ import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
+
+import iap2.carplay_bonjour as carplay_bonjour
 
 BUS_NAME = 'org.bluez'
 PROFILE_INTERFACE = 'org.bluez.Profile1'
@@ -89,13 +92,13 @@ class IAPProfile(dbus.service.Object):
     @dbus.service.method(dbus_interface=PROFILE_INTERFACE,
                          in_signature='oha{sv}')
     def NewConnection(self, device, fd, opts):
-        print("new conn", device, self.__path)
+        print("new bluetooth connection", device, self.__path)
         raw_fd = fd.take()
         s = socket.fromfd(raw_fd, socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
         s.settimeout(None)
 
         async def on_connection():
-            reader, writer = await asyncio.open_connection(sock=s, timeout=None)
+            reader, writer = await asyncio.open_connection(sock=s)
             self.on_connection(reader, writer)
 
         self._loop.call_soon_threadsafe(lambda: asyncio.create_task(on_connection()))
@@ -184,6 +187,7 @@ class BluetoothTransport:
 
     def _bluetooth_thread(self):
         DBusGMainLoop(set_as_default=True)
+        carplay_bonjour.start_service("DC:A6:32:63:35:20")
         bus = dbus.SystemBus()
         bluez = bus.get_object(BUS_NAME, '/org/bluez')
         iapServerProfile = IAPProfile(bus, "/org/bluez/iap_server", self.on_connection, self._loop)
