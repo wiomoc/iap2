@@ -1,6 +1,5 @@
 import asyncio
 
-import iap2.carplay_bonjour as carplay_bonjour
 from iap2.control_session_message.wifi import AccessoryWiFiConfigurationInformation, \
     RequestAccessoryWiFiConfigurationInformation, SecurityType
 from iap2.control_session_message.car_play import DeviceTransportIdentifierNotification, WirelessCarPlayUpdate, \
@@ -18,7 +17,7 @@ from iap2.link_layer import IAP2Connection
 from iap2.transport.bluetooth import BluetoothTransport
 from iap2.control_session_message.authentication import RequestAuthenticationCertificate, AuthenticationCertificate, \
     RequestAuthenticationChallengeResponse, AuthenticationResponse, AuthenticationSucceeded, AuthenticationFailed
-from iap2.rtsc_server import server_task
+
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
@@ -123,9 +122,6 @@ if __name__ == '__main__':
 
 
     async def main():
-        #carplay_bonjour.listen_service()
-        loop.create_task(server_task())
-
 
         def on_connection(reader, writer):
             print(reader, writer)
