@@ -34,7 +34,7 @@ def start_service(device_id):
                 "User-Agent": "AirPlay/280.33.8",
                 "AirPlay-Receiver-Device-ID": str(mac_int),
             })
-            print(request.urlopen(req).read())
+            print(request.urlopen(req, timeout=30).read())
         except:
             pass
 
